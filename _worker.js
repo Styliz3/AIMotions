@@ -1,4 +1,5 @@
-// Cloudflare Pages Worker - CS2 Tracker Backend
+// Cloudflare Pages Functions - CS2 Tracker Backend
+// Save this file as: functions/api/track.js
 // IMPORTANT: Add your Steam API key here: https://steamcommunity.com/dev/apikey
 const STEAM_API_KEY = '9EA02C259FE915EA2A5DA393C387AC32';
 
@@ -13,83 +14,73 @@ const RANK_TIERS = [
   { name: 'Global Elite', min: 3500, max: Infinity }
 ];
 
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
+export async function onRequestPost(context) {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
 
-    // CORS headers
-    const corsHeaders = {
+  try {
+    // Check if API key is configured
+    if (!STEAM_API_KEY || STEAM_API_KEY === 'YOUR_STEAM_API_KEY_HERE') {
+      return jsonResponse({ 
+        error: 'Steam API key not configured. Please add your Steam API key in functions/api/track.js. Get one at: https://steamcommunity.com/dev/apikey' 
+      }, 500, corsHeaders);
+    }
+
+    const { steamInput } = await context.request.json();
+    
+    if (!steamInput) {
+      return jsonResponse({ error: 'Steam input is required' }, 400, corsHeaders);
+    }
+
+    const steamId = await resolveSteamId(steamInput);
+    
+    if (!steamId) {
+      return jsonResponse({ error: 'Invalid Steam profile URL or ID. Please check the URL and try again.' }, 400, corsHeaders);
+    }
+
+    // Fetch current stats
+    const profile = await fetchSteamProfile(steamId);
+    const stats = await fetchCS2Stats(steamId);
+    
+    // Calculate rank
+    const rank = calculateRank(stats);
+    
+    // Get or create player history (using KV if available)
+    let matches = [];
+    if (context.env.CS2_TRACKER) {
+      const history = await getPlayerHistory(context.env.CS2_TRACKER, steamId);
+      matches = await trackNewMatches(context.env.CS2_TRACKER, steamId, stats, history);
+    } else {
+      // Generate sample matches if KV is not configured
+      matches = generateSampleMatches(stats);
+    }
+
+    return jsonResponse({
+      steamId,
+      profile,
+      stats,
+      rank,
+      matches
+    }, 200, corsHeaders);
+
+  } catch (error) {
+    console.error('API Error:', error);
+    return jsonResponse({ error: error.message }, 500, corsHeaders);
+  }
+}
+
+export async function onRequestOptions() {
+  return new Response(null, {
+    headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
-    };
-
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
     }
-
-    // Serve index.html for root path
-    if (url.pathname === '/' && request.method === 'GET') {
-      return env.ASSETS.fetch(request);
-    }
-
-    // API endpoint for tracking
-    if (url.pathname === '/api/track' && request.method === 'POST') {
-      try {
-        // Check if API key is configured
-        if (!STEAM_API_KEY || STEAM_API_KEY === 'YOUR_STEAM_API_KEY_HERE') {
-          return jsonResponse({ 
-            error: 'Steam API key not configured. Please add your Steam API key in _worker.js. Get one at: https://steamcommunity.com/dev/apikey' 
-          }, 500, corsHeaders);
-        }
-
-        const { steamInput } = await request.json();
-        
-        if (!steamInput) {
-          return jsonResponse({ error: 'Steam input is required' }, 400, corsHeaders);
-        }
-
-        const steamId = await resolveSteamId(steamInput);
-        
-        if (!steamId) {
-          return jsonResponse({ error: 'Invalid Steam profile URL or ID. Please check the URL and try again.' }, 400, corsHeaders);
-        }
-
-        // Fetch current stats
-        const profile = await fetchSteamProfile(steamId);
-        const stats = await fetchCS2Stats(steamId);
-        
-        // Calculate rank
-        const rank = calculateRank(stats);
-        
-        // Get or create player history (using KV if available)
-        let matches = [];
-        if (env.CS2_TRACKER) {
-          const history = await getPlayerHistory(env.CS2_TRACKER, steamId);
-          matches = await trackNewMatches(env.CS2_TRACKER, steamId, stats, history);
-        } else {
-          // Generate sample matches if KV is not configured
-          matches = generateSampleMatches(stats);
-        }
-
-        return jsonResponse({
-          steamId,
-          profile,
-          stats,
-          rank,
-          matches
-        }, 200, corsHeaders);
-
-      } catch (error) {
-        console.error('API Error:', error);
-        return jsonResponse({ error: error.message }, 500, corsHeaders);
-      }
-    }
-
-    // Fallback to assets
-    return env.ASSETS.fetch(request);
-  }
-};
+  });
+}
 
 function jsonResponse(data, status, headers) {
   return new Response(JSON.stringify(data), {
